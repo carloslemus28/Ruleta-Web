@@ -1,0 +1,85 @@
+name: E2E Selenium (Ruleta)
+
+on:
+  pull_request:
+  push:
+    branches: ["main"]
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -proot"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=15
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Wait MySQL and import DB
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mysql-client
+          echo "⏳ Esperando MySQL..."
+          for i in {1..30}; do
+            mysql -h 127.0.0.1 -uroot -proot -e "SELECT 1" && break
+            sleep 2
+          done
+          echo "📦 Importando ruletaDB.sql..."
+          mysql -h 127.0.0.1 -uroot -proot < ruletaDB.sql
+
+      - name: Start backend (API)
+        env:
+          PORT: "3000"
+          DB_HOST: "127.0.0.1"
+          DB_USER: "root"
+          DB_PASS: "root"
+          DB_NAME: "ruletaDB"
+          JWT_SECRET: "secreto_super_seguro"
+        run: |
+          node server.js &
+          echo "⏳ Esperando API..."
+          for i in {1..30}; do
+            curl -s http://127.0.0.1:3000/ && break
+            sleep 2
+          done
+
+      - name: Start frontend (public)
+        run: |
+          npx http-server@14.1.1 public -p 5173 -a 127.0.0.1 &
+          echo "⏳ Esperando Front..."
+          for i in {1..30}; do
+            curl -s http://127.0.0.1:5173/ >/dev/null && break
+            sleep 2
+          done
+
+      - name: Run Selenium E2E
+        env:
+          CI: "true"
+          BASE_URL: "http://127.0.0.1:5173"
+        run: node tests/e2e/ruleta.e2e.js
+
+      - name: Upload artifacts (screenshots)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-artifacts
+          path: artifacts
